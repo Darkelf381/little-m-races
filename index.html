@@ -63,6 +63,12 @@ let lapCount = 0;
 let bestLap = null;
 let curTime = 0;
 
+// best lap persists per-browser via localStorage — survives a refresh, doesn't leave this device
+try {
+  const saved = localStorage.getItem('littleM_bestLap');
+  if(saved !== null) bestLap = parseFloat(saved);
+} catch(e) { /* storage unavailable — just play without memory */ }
+
 function resetCar(){
   car.x = centerline[0].x; car.y = centerline[0].y;
   const p2 = centerline[1];
@@ -103,7 +109,10 @@ function update(dt){
   const progress = near.i / N;
   if(lastProgress > 0.9 && progress < 0.1){
     const t = (performance.now() - lapStart)/1000;
-    if(lapCount>0 && (bestLap===null || t<bestLap)) bestLap = t;
+    if(lapCount>0 && (bestLap===null || t<bestLap)){
+      bestLap = t;
+      try { localStorage.setItem('littleM_bestLap', String(bestLap)); } catch(e) {}
+    }
     lapStart = performance.now();
     lapCount++;
   }
