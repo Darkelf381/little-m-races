@@ -79,17 +79,20 @@ function update(dt){
   car.speed *= (1 - 0.6*dt);
   car.speed = Math.max(-140, Math.min(340, car.speed));
 
-  // steering — effectiveness drops off at high speed, so flat-out cornering slides you wide (the "lift" rule)
-  const steerPower = 2.4 * Math.max(0.25, 1 - Math.abs(car.speed)/420);
-  car.angle += turn * steerPower * dt * (car.speed/220 || 0.001) ;
+  // steering — builds up quickly at low/mid speed so the car actually responds,
+  // then eases off near the top end (the "lift" rule): flat-out, a tight corner
+  // just won't turn you fast enough, same as it shouldn't.
+  const speedAbs = Math.abs(car.speed);
+  const grip = Math.min(1, speedAbs/70) * Math.max(0.35, 1 - Math.max(0, speedAbs-260)/220);
+  car.angle += turn * 3.1 * grip * dt;
 
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
 
-  // off-track penalty: slow you hard if you're beyond the kerb
+  // off-track penalty: a real drag, but survivable — you lose speed, not all of it at once
   const near = nearestOnTrack(car.x, car.y);
   if(near.dist > trackWidth){
-    car.speed *= 0.90; // grass/gravel drag
+    car.speed *= Math.pow(0.5, dt); // ~50% per second in the grass, recoverable
   }
 
   // lap counting: progress around the loop
