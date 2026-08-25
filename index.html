@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Little M's Practice Track</title>
+<style>
+  html,body{margin:0;padding:0;background:#0b0f1a;overflow:hidden;font-family:'Segoe UI',sans-serif;}
+  canvas{display:block;margin:0 auto;background:#0b0f1a;}
+  #hud{position:fixed;top:8px;left:8px;color:#cfe3ff;font-size:14px;text-shadow:0 0 4px #000;}
+  #hint{position:fixed;bottom:8px;left:8px;color:#7fa0d0;font-size:12px;text-shadow:0 0 4px #000;}
+</style>
+</head>
+<body>
+<div id="hud">Lap: 0 &nbsp; Time: 0.00s &nbsp; Best: --</div>
+<div id="hint">Arrow keys: Up=throttle, Down=brake/reverse, Left/Right=steer. Don't take it flat.</div>
+<canvas id="c" width="900" height="600"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// ---- Track definition: a twisty loop with a tight hairpin, blue lanterns lining it ----
+// Centerline as a set of points; track built as a ribbon around it.
+const cx = 450, cy = 300;
+function trackPoint(t){
+  // t in [0, 1) -> {x,y}
+  const a = t * Math.PI * 2;
+  // base ellipse warped with a couple of lobes to create turns + one tight hairpin
+  const r = 220 + 60*Math.sin(a*2) - 40*Math.sin(a*5) + (a>4.6 && a<5.6 ? -80*Math.sin((a-4.6)/1.0*Math.PI) : 0);
+  return { x: cx + r*Math.cos(a)*1.3, y: cy + r*Math.sin(a)*0.85 };
+}
+const N = 400;
+const centerline = [];
+for(let i=0;i<N;i++) centerline.push(trackPoint(i/N));
+
+const trackWidth = 46;
+
+function nearestOnTrack(x,y){
+  let best=1e18, bi=0;
+  for(let i=0;i<N;i++){
+    const p = centerline[i];
+    const d = (p.x-x)*(p.x-x)+(p.y-y)*(p.y-y);
+    if(d<best){best=d;bi=i;}
+  }
+  return {i:bi, dist:Math.sqrt(best)};
+}
+
+// ---- Car state ----
+let car = {
+  x: centerline[0].x, y: centerline[0].y,
+  angle: 0, speed: 0, steer: 0
+};
+const keys = {};
+window.addEventListener('keydown', e=>{ keys[e.key]=true; if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) e.preventDefault(); });
+window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+let lapStart = performance.now();
+let lastProgress = 0;
+let lapCount = 0;
+let bestLap = null;
+let curTime = 0;
+
+function resetCar(){
+  car.x = centerline[0].x; car.y = centerline[0].y;
+  const p2 = centerline[1];
+  car.angle = Math.atan2(p2.y-car.y, p2.x-car.x);
+  car.speed = 0;
+}
+resetCar();
+
+function update(dt){
+  const accel = keys['ArrowUp'] ? 260 : 0;
+  const brake = keys['ArrowDown'] ? 320 : 0;
+  const turn = (keys['ArrowLeft']?-1:0) + (keys['ArrowRight']?1:0);
+
+  // throttle/brake
+  if(accel>0) car.speed += accel*dt;
+  if(brake>0) car.speed -= brake*dt;
+  // drag
+  car.speed *= (1 - 0.6*dt);
+  car.speed = Math.max(-140, Math.min(340, car.speed));
+
+  // steering — effectiveness drops off at high speed, so flat-out cornering slides you wide (the "lift" rule)
+  const steerPower = 2.4 * Math.max(0.25, 1 - Math.abs(car.speed)/420);
+  car.angle += turn * steerPower * dt * (car.speed/220 || 0.001) ;
+
+  car.x += Math.cos(car.angle) * car.speed * dt;
+  car.y += Math.sin(car.angle) * car.speed * dt;
+
+  // off-track penalty: slow you hard if you're beyond the kerb
+  const near = nearestOnTrack(car.x, car.y);
+  if(near.dist > trackWidth){
+    car.speed *= 0.90; // grass/gravel drag
+  }
+
+  // lap counting: progress around the loop
+  const progress = near.i / N;
+  if(lastProgress > 0.9 && progress < 0.1){
+    const t = (performance.now() - lapStart)/1000;
+    if(lapCount>0 && (bestLap===null || t<bestLap)) bestLap = t;
+    lapStart = performance.now();
+    lapCount++;
+  }
+  lastProgress = progress;
+  curTime = (performance.now()-lapStart)/1000;
+}
+
+function draw(){
+  ctx.clearRect(0,0,900,600);
+
+  // track ribbon
+  ctx.lineWidth = trackWidth*2;
+  ctx.strokeStyle = '#23283a';
+  ctx.beginPath();
+  centerline.forEach((p,i)=> i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+  ctx.closePath();
+  ctx.stroke();
+
+  // red/white kerbs
+  ctx.lineWidth = 6;
+  for(let i=0;i<N;i+=6){
+    const p = centerline[i];
+    const p2 = centerline[(i+1)%N];
+    const nx = -(p2.y-p.y), ny = (p2.x-p.x);
+    const nlen = Math.hypot(nx,ny)||1;
+    const ox = nx/nlen*(trackWidth-4), oy = ny/nlen*(trackWidth-4);
+    ctx.strokeStyle = (Math.floor(i/6)%2===0) ? '#d43b3b' : '#eaeaea';
+    ctx.beginPath();
+    ctx.moveTo(p.x+ox, p.y+oy);
+    ctx.lineTo(p2.x+ox, p2.y+oy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p.x-ox, p.y-oy);
+    ctx.lineTo(p2.x-ox, p2.y-oy);
+    ctx.stroke();
+  }
+
+  // blue lanterns lining the outside of the track
+  for(let i=0;i<N;i+=14){
+    const p = centerline[i];
+    const p2 = centerline[(i+1)%N];
+    const nx = -(p2.y-p.y), ny = (p2.x-p.x);
+    const nlen = Math.hypot(nx,ny)||1;
+    const lx = p.x + nx/nlen*(trackWidth+18);
+    const ly = p.y + ny/nlen*(trackWidth+18);
+    const glow = ctx.createRadialGradient(lx,ly,0,lx,ly,10);
+    glow.addColorStop(0,'rgba(120,180,255,0.9)');
+    glow.addColorStop(1,'rgba(120,180,255,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(lx,ly,10,0,7); ctx.fill();
+    ctx.fillStyle = '#bcdcff';
+    ctx.beginPath(); ctx.arc(lx,ly,2.4,0,7); ctx.fill();
+  }
+
+  // start/finish line
+  const sp = centerline[0], sp2 = centerline[1];
+  const snx = -(sp2.y-sp.y), sny = (sp2.x-sp.x);
+  const snl = Math.hypot(snx,sny)||1;
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(sp.x+snx/snl*trackWidth, sp.y+sny/snl*trackWidth);
+  ctx.lineTo(sp.x-snx/snl*trackWidth, sp.y-sny/snl*trackWidth);
+  ctx.stroke();
+
+  // car — drawn as a small wireframe wedge (a nod to the sine-wave car)
+  ctx.save();
+  ctx.translate(car.x, car.y);
+  ctx.rotate(car.angle);
+  ctx.strokeStyle = '#ffd76a';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(10,0); ctx.lineTo(-8,6); ctx.lineTo(-4,0); ctx.lineTo(-8,-6); ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+
+  document.getElementById('hud').textContent =
+    `Lap: ${lapCount}   Time: ${curTime.toFixed(2)}s   Best: ${bestLap? bestLap.toFixed(2)+'s' : '--'}`;
+}
+
+let last = performance.now();
+function frame(now){
+  const dt = Math.min(0.033, (now-last)/1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
