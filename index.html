@@ -12,7 +12,7 @@
 </head>
 <body>
 <div id="hud">Lap: 0 &nbsp; Time: 0.00s &nbsp; Best: --</div>
-<div id="hint">Arrow keys: Up=throttle, Down=brake/reverse, Left/Right=steer. Don't take it flat.</div>
+<div id="hint">Arrow keys: Up=throttle, Down=brake/reverse, Left/Right=steer. Don't take it flat. Press R to reset.</div>
 <canvas id="c" width="900" height="600"></canvas>
 <script>
 const canvas = document.getElementById('c');
@@ -50,7 +50,11 @@ let car = {
   angle: 0, speed: 0, steer: 0
 };
 const keys = {};
-window.addEventListener('keydown', e=>{ keys[e.key]=true; if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) e.preventDefault(); });
+window.addEventListener('keydown', e=>{
+  keys[e.key]=true;
+  if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) e.preventDefault();
+  if(e.key==='r' || e.key==='R'){ resetCar(); lapStart=performance.now(); }
+});
 window.addEventListener('keyup', e=>{ keys[e.key]=false; });
 
 let lapStart = performance.now();
