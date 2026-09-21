@@ -81,6 +81,14 @@ let lapCount = 0;
 let bestLap = null;
 let curTime = 0;
 
+// unwrapped odometer around the loop -- fixes a real bug found tonight: the old
+// lastProgress>0.9 && progress<0.1 check flickers true if you so much as tap
+// reverse right on the start/finish line, because index 399 sits geometrically
+// next to index 0. A signed, accumulated distance can't be fooled by that --
+// a tiny reverse twitch near the line is a tiny negative delta, not a lap.
+let unwrappedProgress = 0;
+let lapProgressAtStart = 0;
+
 // best lap persists per-browser via localStorage — survives a refresh, doesn't leave this device
 try {
   const saved = localStorage.getItem('littleM_bestLap');
@@ -93,6 +101,9 @@ function resetCar(){
   car.angle = Math.atan2(p2.y-car.y, p2.x-car.x);
   car.travelAngle = car.angle;
   car.speed = 0;
+  lastProgress = 0;
+  unwrappedProgress = 0;
+  lapProgressAtStart = 0;
 }
 resetCar();
 
@@ -163,20 +174,33 @@ function update(dt){
   car.x += Math.cos(car.travelAngle) * car.speed * dt;
   car.y += Math.sin(car.travelAngle) * car.speed * dt;
 
-  // off-track penalty: a real drag, but survivable — you lose speed, not all of it at once
+  // off-track penalty: a real drag, but survivable — you lose speed, not all of it at once.
+  // Scales with HOW FAR gone you are: a little wide barely slows you (~50%/s, same as
+  // always), but a hydroplane bad enough to launch you off the visible map gets caught
+  // hard instead of coasting forever -- "recoverable" was never meant to include leaving
+  // the canvas entirely.
   const near = nearestOnTrack(car.x, car.y);
   if(near.dist > trackWidth){
-    car.speed *= Math.pow(0.5, dt); // ~50% per second in the grass, recoverable
+    const excess = near.dist - trackWidth;
+    const retainPerSecond = Math.max(0.03, 0.5 - excess/300);
+    car.speed *= Math.pow(retainPerSecond, dt);
   }
 
-  // lap counting: progress around the loop
+  // lap counting: unwrapped, signed progress around the loop (see the odometer note
+  // above) -- a full lap only counts once you've actually accumulated a full trip
+  // around, forward, not from a flicker at the start/finish line.
   const progress = near.i / N;
-  if(lastProgress > 0.9 && progress < 0.1){
+  let delta = progress - lastProgress;
+  if(delta > 0.5) delta -= 1;   // wrapped backward across the line (399 -> 0)
+  if(delta < -0.5) delta += 1;  // wrapped forward across the line (0 -> 399, going backward)
+  unwrappedProgress += delta;
+  if(unwrappedProgress - lapProgressAtStart >= 1){
     const t = (performance.now() - lapStart)/1000;
     if(lapCount>0 && (bestLap===null || t<bestLap)){
       bestLap = t;
       try { localStorage.setItem('littleM_bestLap', String(bestLap)); } catch(e) {}
     }
+    lapProgressAtStart = unwrappedProgress;
     lapStart = performance.now();
     lapCount++;
   }
