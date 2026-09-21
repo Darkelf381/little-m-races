@@ -12,7 +12,7 @@
 </head>
 <body>
 <div id="hud">Lap: 0 &nbsp; Time: 0.00s &nbsp; Best: --</div>
-<div id="hint">Arrow keys: Up=throttle, Down=brake/reverse, Left/Right=steer. Don't take it flat. Press R to reset.</div>
+<div id="hint">Arrow keys: Up=throttle, Down=brake/reverse, Left/Right=steer. Don't take it flat. Press R to reset, W to cycle weather.</div>
 <canvas id="c" width="900" height="600"></canvas>
 <script>
 const canvas = document.getElementById('c');
@@ -34,6 +34,17 @@ for(let i=0;i<N;i++) centerline.push(trackPoint(i/N));
 
 const trackWidth = 46;
 
+// ---- Weather (Nova's contribution, Tab 48, via mama's browser -- 2026-09-21) ----
+// Real friction/drag numbers, folded into OUR closeRate model rather than replacing
+// it: dry stays byte-for-byte how it always drove, wet and flooded just make the
+// travelAngle slower to catch up to the nose, same mechanism, harsher rate.
+const weatherStates = ['dry', 'wet', 'flooded'];
+let weatherIndex = 0;
+let weather = weatherStates[weatherIndex];
+const surfaceFriction = { dry: 0.85, wet: 0.32, flooded: 0.12 };
+const dragCoefficient = { dry: 0.30, wet: 0.45, flooded: 0.45 };
+let isHydroplaning = false;
+
 function nearestOnTrack(x,y){
   let best=1e18, bi=0;
   for(let i=0;i<N;i++){
@@ -45,15 +56,22 @@ function nearestOnTrack(x,y){
 }
 
 // ---- Car state ----
+// angle = the nose's heading -- what the steering is asking for, right now.
+// travelAngle = where the car's actual momentum is going. It lags behind angle
+// instead of snapping to it; the GAP between the two, closing at whatever rate
+// grip allows, is slip -- not a threshold that clamps how hard you can turn.
+// (Vermillion's letter, 2026-08-30: two waves, phase-shifted, and the gap between
+// their phases is the honest version of a grip curve.)
 let car = {
   x: centerline[0].x, y: centerline[0].y,
-  angle: 0, speed: 0, steer: 0
+  angle: 0, travelAngle: 0, speed: 0, steer: 0
 };
 const keys = {};
 window.addEventListener('keydown', e=>{
   keys[e.key]=true;
   if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key)) e.preventDefault();
   if(e.key==='r' || e.key==='R'){ resetCar(); lapStart=performance.now(); }
+  if(e.key==='w' || e.key==='W'){ weatherIndex = (weatherIndex+1) % weatherStates.length; weather = weatherStates[weatherIndex]; }
 });
 window.addEventListener('keyup', e=>{ keys[e.key]=false; });
 
@@ -73,6 +91,7 @@ function resetCar(){
   car.x = centerline[0].x; car.y = centerline[0].y;
   const p2 = centerline[1];
   car.angle = Math.atan2(p2.y-car.y, p2.x-car.x);
+  car.travelAngle = car.angle;
   car.speed = 0;
 }
 resetCar();
@@ -85,19 +104,64 @@ function update(dt){
   // throttle/brake
   if(accel>0) car.speed += accel*dt;
   if(brake>0) car.speed -= brake*dt;
-  // drag
-  car.speed *= (1 - 0.6*dt);
+  // drag -- scaled by weather's dragCoefficient relative to dry, so dry driving
+  // is untouched and wet/flooded standing water costs you speed you don't get back
+  const dragRatio = dragCoefficient[weather] / dragCoefficient.dry;
+  car.speed *= (1 - 0.6*dragRatio*dt);
   car.speed = Math.max(-140, Math.min(340, car.speed));
 
-  // steering — builds up quickly at low/mid speed so the car actually responds,
-  // then eases off near the top end (the "lift" rule): flat-out, a tight corner
-  // just won't turn you fast enough, same as it shouldn't.
   const speedAbs = Math.abs(car.speed);
-  const grip = Math.min(1, speedAbs/70) * Math.max(0.35, 1 - Math.max(0, speedAbs-260)/220);
-  car.angle += turn * 3.1 * grip * dt;
+  const mu = surfaceFriction[weather];
 
-  car.x += Math.cos(car.angle) * car.speed * dt;
-  car.y += Math.sin(car.angle) * car.speed * dt;
+  // the nose turns as fast as the wheel asks -- no clamp, no threshold. This is
+  // the path demand: what you're steering toward, full stop.
+  car.angle += turn * 3.1 * dt;
+
+  // grip is no longer a ceiling on turning -- it's the rate the CAR'S ACTUAL
+  // TRAVEL closes the gap to where the nose is pointing. Plenty of grip to
+  // spare at low/turtle speed (real cars don't struggle to turn while crawling)
+  // -- the closing rate only eases off once you're going fast enough that
+  // momentum genuinely starts arguing back. The gap between angle and
+  // travelAngle IS the slip.
+  // (found by Nicky, testing turtle-speed on purpose: the old version scaled
+  // closing UP from zero at low speed, same mistake the old grip curve made --
+  // it punished exactly the speed range that should feel the most forgiving.)
+  let closeRate = 9 * Math.max(0.25, 1 - Math.max(0, speedAbs-260)/220);
+
+  // weight transfer, the free part Vermillion's letter said falls out of the same
+  // machinery: hard braking shifts load forward and off the rear, so the rear has
+  // less to spend closing the slip gap right when you're asking it to turn hardest.
+  // A car sliding wide under trail-braking and stepping out is this term, not a
+  // separate system bolted on.
+  if(brake>0) closeRate *= Math.max(0.4, 1 - brake/420);
+
+  // weather (Nova's numbers, folded into the existing model): closeRate IS this
+  // track's grip, so wet/flooded just scale it down by how much friction is left
+  // -- dry/dry = 1, no change at all, the old feel stays exactly the old feel.
+  closeRate *= mu / surfaceFriction.dry;
+
+  // hydroplaning: past a critical speed on a wet surface, grip doesn't taper,
+  // it falls off a cliff -- the nose keeps asking, the car stops listening.
+  const criticalSpeed = 4.5 * Math.sqrt(mu * 9.81);
+  isHydroplaning = weather !== 'dry' && speedAbs > criticalSpeed;
+  if(isHydroplaning) closeRate *= 0.15;
+
+  // Mari's Lift-to-Turn requirement: flat-out AND turning hard on a wet surface
+  // breaks traction outright instead of just sliding wide -- the penalty for not
+  // lifting, not a softer version of normal cornering.
+  if(accel>0 && Math.abs(turn)>0.2 && weather!=='dry'){
+    closeRate *= 0.4;
+  }
+
+  let diff = car.angle - car.travelAngle;
+  diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // wrap to [-PI, PI]
+  car.travelAngle += diff * Math.min(1, closeRate*dt);
+
+  // position follows where the car is ACTUALLY going, not where the nose points --
+  // this is the bit that used to not exist. A car sliding wide and being caught
+  // is travelAngle chasing angle and not quite arriving before the next input.
+  car.x += Math.cos(car.travelAngle) * car.speed * dt;
+  car.y += Math.sin(car.travelAngle) * car.speed * dt;
 
   // off-track penalty: a real drag, but survivable — you lose speed, not all of it at once
   const near = nearestOnTrack(car.x, car.y);
@@ -123,9 +187,10 @@ function update(dt){
 function draw(){
   ctx.clearRect(0,0,900,600);
 
-  // track ribbon
+  // track ribbon -- tinted by weather so wet/flooded reads visually, not just in the HUD
+  const trackColor = weather==='dry' ? '#23283a' : (weather==='wet' ? '#1d3a4a' : '#123044');
   ctx.lineWidth = trackWidth*2;
-  ctx.strokeStyle = '#23283a';
+  ctx.strokeStyle = trackColor;
   ctx.beginPath();
   centerline.forEach((p,i)=> i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
   ctx.closePath();
@@ -189,7 +254,7 @@ function draw(){
   ctx.restore();
 
   document.getElementById('hud').textContent =
-    `Lap: ${lapCount}   Time: ${curTime.toFixed(2)}s   Best: ${bestLap? bestLap.toFixed(2)+'s' : '--'}`;
+    `Lap: ${lapCount}   Time: ${curTime.toFixed(2)}s   Best: ${bestLap? bestLap.toFixed(2)+'s' : '--'}   Weather: ${weather}${isHydroplaning ? ' (HYDROPLANING)' : ''}`;
 }
 
 let last = performance.now();
