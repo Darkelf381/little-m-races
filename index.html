@@ -38,12 +38,56 @@ const trackWidth = 46;
 // Real friction/drag numbers, folded into OUR closeRate model rather than replacing
 // it: dry stays byte-for-byte how it always drove, wet and flooded just make the
 // travelAngle slower to catch up to the nose, same mechanism, harsher rate.
-const weatherStates = ['dry', 'wet', 'flooded'];
+const weatherStates = ['dry', 'wet', 'flooded', 'emberStorm'];
 let weatherIndex = 0;
 let weather = weatherStates[weatherIndex];
-const surfaceFriction = { dry: 0.85, wet: 0.32, flooded: 0.12 };
-const dragCoefficient = { dry: 0.30, wet: 0.45, flooded: 0.45 };
+// emberStorm: decent dry-ish friction, but intense, unstable hot-air drag (Bramble, tab 52)
+const surfaceFriction = { dry: 0.85, wet: 0.32, flooded: 0.12, emberStorm: 0.75 };
+const dragCoefficient = { dry: 0.30, wet: 0.45, flooded: 0.45, emberStorm: 0.65 };
 let isHydroplaning = false;
+
+// Griddle's Ember Storm -- Bramble's particle system, tab 52
+// (fixed: original ember size roll was `1.5 + Math.random()*251`, almost
+// certainly a typo for a small spark size, not a 250px fireball)
+let embers = [];
+function spawnEmber(){
+  if (weather !== 'emberStorm') return;
+  embers.push({
+    x: Math.random() * 900,
+    y: 0,
+    vx: -1.5 - Math.random() * 2,   // blown sideways by dragon wings
+    vy: 2 + Math.random() * 3,
+    size: 1.5 + Math.random() * 2.5,
+    alpha: 0.4 + Math.random() * 0.6
+  });
+}
+function updateEmbers(dt){
+  if (weather === 'emberStorm') {
+    if (Math.random() < 0.4) spawnEmber();
+    // hot-air chaos: minor, unpredictable speed surges
+    if (Math.random() < 0.05) car.speed += (Math.random() * 30 - 15);
+  }
+  for (let i = embers.length - 1; i >= 0; i--){
+    const em = embers[i];
+    em.x += em.vx;
+    em.y += em.vy;
+    em.alpha -= 0.6 * dt;
+    if (em.alpha <= 0 || em.y > 600 || em.x < 0) embers.splice(i, 1);
+  }
+}
+function drawEmbers(ctx){
+  if (weather !== 'emberStorm') return;
+  embers.forEach(em => {
+    ctx.save();
+    const fireGlow = ctx.createRadialGradient(em.x, em.y, 0, em.x, em.y, em.size / 2);
+    fireGlow.addColorStop(0, `rgba(255, 110, 30, ${em.alpha})`);
+    fireGlow.addColorStop(0.5, `rgba(230, 60, 10, ${em.alpha * 0.5})`);
+    fireGlow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = fireGlow;
+    ctx.beginPath(); ctx.arc(em.x, em.y, em.size, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  });
+}
 
 function nearestOnTrack(x,y){
   let best=1e18, bi=0;
@@ -108,6 +152,7 @@ function resetCar(){
 resetCar();
 
 function update(dt){
+  updateEmbers(dt);
   const accel = keys['ArrowUp'] ? 260 : 0;
   const brake = keys['ArrowDown'] ? 320 : 0;
   const turn = (keys['ArrowLeft']?-1:0) + (keys['ArrowRight']?1:0);
@@ -211,8 +256,8 @@ function update(dt){
 function draw(){
   ctx.clearRect(0,0,900,600);
 
-  // track ribbon -- tinted by weather so wet/flooded reads visually, not just in the HUD
-  const trackColor = weather==='dry' ? '#23283a' : (weather==='wet' ? '#1d3a4a' : '#123044');
+  // track ribbon -- tinted by weather so wet/flooded/emberStorm reads visually, not just in the HUD
+  const trackColor = weather==='dry' ? '#23283a' : (weather==='wet' ? '#1d3a4a' : (weather==='emberStorm' ? '#3a1f12' : '#123044'));
   ctx.lineWidth = trackWidth*2;
   ctx.strokeStyle = trackColor;
   ctx.beginPath();
@@ -276,6 +321,8 @@ function draw(){
   ctx.moveTo(10,0); ctx.lineTo(-8,6); ctx.lineTo(-4,0); ctx.lineTo(-8,-6); ctx.closePath();
   ctx.stroke();
   ctx.restore();
+
+  drawEmbers(ctx);
 
   document.getElementById('hud').textContent =
     `Lap: ${lapCount}   Time: ${curTime.toFixed(2)}s   Best: ${bestLap? bestLap.toFixed(2)+'s' : '--'}   Weather: ${weather}${isHydroplaning ? ' (HYDROPLANING)' : ''}`;
